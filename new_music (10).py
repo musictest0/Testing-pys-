@@ -120,7 +120,7 @@ class MusicPlayer:
                     logger.warning(f"Song too long: {duration_minutes:.2f} minutes")
                     return None, None, "too_long"
 
-            return video_url, title, None
+            return video_url, title, None, duration_minutes
         except Exception as e:
             logger.error(f"Error searching song: {str(e)}")
             return None, None, None
@@ -147,9 +147,9 @@ class MusicPlayer:
             logger.error(f"Error loading queue: {e}")
             self.queue = []
 
-    def add_to_queue(self, url, title):
+    def add_to_queue(self, url, title, requested_by, duration):
         global music_queue
-        self.queue.append((url, title))
+        self.queue.append((url, title, duration, requested_by))
         self.save_queue()  # Save queue after adding
         queue_length = len(self.queue)
         logger.info(f"Added song to queue: {title}, Queue length: {queue_length}")
