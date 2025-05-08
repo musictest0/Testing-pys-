@@ -35,7 +35,8 @@ class MusicPlayer:
         self.max_history = 10  # Maximum number of songs to keep in history
         self.current_song = None
         self.current_url = None
-        self.api_key = 'AIzaSyCuQwsagMLGToKlbNMEf7plFEkKhbr-DWs'
+        self.api_key = os.getenv('YOUTUBE_API_KEY', 'AIzaSyCuQwsagMLGToKlbNMEf7plFEkKhbr-DWs')
+        self.queue_lock = Lock()
         self.volume = 100  # Default volume (percentage)
         self.ydl_opts = {
             'format': 'bestaudio/best',
@@ -49,11 +50,15 @@ class MusicPlayer:
             'cookiefile': 'cookies.txt'
         }
         self.playback_thread = None
+        self.download_thread = None  # Thread for pre-downloading
+    
         self.is_playing = False
         self.stats = self.load_stats() # Load stats on initialization
         self.load_queue()  # Load queue from file on initialization
         self.ffmpeg_process = None  # Add FFmpeg process reference
         self.playlist_process = None  # Add playlist process reference
+        if self.queue:
+            self.pre_download_first_song()
         logger.info("MusicPlayer initialized")
 
     def load_stats(self):
@@ -86,6 +91,47 @@ class MusicPlayer:
             logger.info("Stats saved successfully")
         except Exception as e:
             logger.error(f"Error saving stats: {e}")
+
+    def pre_download_first_song(self):
+        """Pre-download the first song in the queue in a separate thread"""
+        with self.queue_lock:
+            if not self.queue:
+                logger.info("No songs in queue to pre-download")
+                return
+            url, title, _, _ = self.queue[0]
+        
+        def download_thread():
+            try:
+                # Clean up old next_song files
+                for ext in ["mp3", "webm", "m4a", "opus"]:
+                    for f in glob.glob(f"next_song.{ext}"):
+                        try:
+                            os.remove(f)
+                            logger.info(f"Deleted old file: {f}")
+                        except Exception as e:
+                            logger.error(f"Error deleting old file {f}: {e}")
+
+                logger.info(f"Pre-downloading first song: {title}")
+                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                    ydl.download([url])
+                logger.info(f"Pre-download complete for: {title}")
+
+                # Verify download
+                found_file = False
+                for ext in ["mp3", "webm", "m4a", "opus"]:
+                    if os.path.exists(f"next_song.{ext}"):
+                        found_file = True
+                        break
+                if not found_file:
+                    logger.error(f"Pre-download failed for: {title}")
+            except Exception as e:
+                logger.error(f"Error pre-downloading song {title}: {str(e)}")
+
+        # Start download in a new thread
+        self.download_thread = Thread(target=download_thread)
+        self.download_thread.start()
+        logger.info(f"Started pre-download thread for: {title}")
+        
 
     def search_song(self, query):
         try:
@@ -150,38 +196,53 @@ class MusicPlayer:
     def add_to_queue(self, url, title, duration, requested_by):
   
         global music_queue
-        self.queue.append((url, title, duration, requested_by))
-        self.save_queue()  # Save queue after adding
-        queue_length = len(self.queue)
-        logger.info(f"Added song to queue: {title}, Queue length: {queue_length}")
-        message = (
+        with self.queue_lock:
+            self.queue.append((url, title, duration, requested_by))
+            self.save_queue()
+            queue_length = len(self.queue)
+            logger.info(f"Added song to queue: {title}, Duration: {duration:.2f} minutes, Requested by: {requested_by}, Queue length: {queue_length}")
+          
+            message = (
     f"\n🎧 Track successfully added!\n\n"
     f"🎼 Title: {title}\n"
     f"⏱️ Duration: {duration:.2f} min\n"
     f"🔖 Queue Position: #{queue_length}\n"
     f"👤 Requested by: {requested_by}"
         )
-        return queue_length, message
+        # If this is the first song in the queue, pre-download it
+            if queue_length == 1:
+                self.pre_download_first_song()
+            return queue_length, message
 
     def delete_user_song(self, username):
-        """Delete the most recent song requested by the user from the queue"""
+    with self.queue_lock:
         if not self.queue:
             logger.info(f"No songs in queue to delete for user: {username}")
             return False, "📋 Queue is empty"
 
-        # Find the most recent song by this user (last occurrence in the queue)
-        for i in range(len(self.queue) - 1, -1, -1):  # Iterate backwards
+        for i in range(len(self.queue) - 1, -1, -1):
             url, title, duration, requested_by = self.queue[i]
             if requested_by == username:
-            # Remove the song
+                was_first = (i == 0)  # Check if the deleted song was first
                 self.queue.pop(i)
-                self.save_queue()  # Save updated queue
+                self.save_queue()
                 logger.info(f"Deleted song '{title}' requested by {username} from queue")
+                # If the first song was deleted, clean up pre-downloaded files and pre-download new first song
+                if was_first:
+                    for ext in ["mp3", "webm", "m4a", "opus"]:
+                        for f in glob.glob(f"next_song.{ext}"):
+                            try:
+                                os.remove(f)
+                                logger.info(f"Deleted pre-downloaded file: {f}")
+                            except Exception as e:
+                                logger.error(f"Error deleting pre-downloaded file {f}: {e}")
+                    self.pre_download_first_song()
                 return True, f"🗑️ Removed from queue:\nTitle: {title}\nDuration: {duration:.2f} minutes\nRequested by: {username}"
-    
+        
         logger.info(f"No songs found in queue requested by {username}")
         return False, f"❌ No songs found in queue requested by {username}"
 
+    
     def get_current_song(self):
         """Get information about the currently playing song"""
         if self.current_song and self.is_playing and self.current_duration is not None and self.current_requested_by is not None:
@@ -219,7 +280,7 @@ class MusicPlayer:
     # Part 1: Currently Playing
         current = self.get_current_song()
         parts.append(
-    f"🎧 𝗖𝗨𝗥𝗥𝗘𝗡𝗧 𝗧𝗥𝗔𝗖𝗞 🎧\n"
+    f"\n🎧 𝗖𝗨𝗥𝗥𝗘𝗡𝗧 𝗧𝗥𝗔𝗖𝗞 🎧\n"
     f"{current}"
         )
     # Part 2: Queue
@@ -275,22 +336,20 @@ class MusicPlayer:
 
     def play_next(self, user=None):
         logger.info("play_next called")
-        # Playlist functionality removed
-        if not self.queue:
-            logger.info("No songs in queue to play in play_next")
-            self.is_playing = False
-            self.current_song = None
-            self.current_url = None
-            self.current_duration = None  # Reset duration
-            self.current_requested_by = None  # Reset requested_by
-       
-            self.save_queue()  # Save queue if now empty
-            return False, "No songs in queue"
+        with self.queue_lock:
+            if not self.queue:
+                logger.info("No songs in queue to play in play_next")
+                self.is_playing = False
+                self.current_song = None
+                self.current_url = None
+                self.current_duration = None
+                self.current_requested_by = None
+                self.save_queue()
+                return False, "No songs in queue"
+
         def play_in_thread():
             try:
-                import glob
-                import os
-                # Clean up old song files before download
+                # Clean up old song files (current song)
                 for ext in ["mp3", "webm", "m4a", "opus"]:
                     for f in glob.glob(f"song.{ext}"):
                         try:
@@ -298,95 +357,101 @@ class MusicPlayer:
                             logger.info(f"Deleted old file: {f}")
                         except Exception as e:
                             logger.error(f"Error deleting old file {f}: {e}")
-                url, title, duration, requested_by = self.queue[0]  # Peek at the first song
-        
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'outtmpl': 'song.%(ext)s',
-                    'quiet': True,
-                    'no_warnings': True,
-                    'cookiefile': 'cookies.txt'
-                }
-                # Add a random sleep interval before downloading
-                sleep_time = random.randint(5, 15)
-                logger.info(f"Sleeping for {sleep_time} seconds before downloading to mimic human behavior.")
-                time.sleep(sleep_time)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    logger.info(f"Downloading song: {title}")
-                    result = ydl.download([url])
-                    logger.info("Download complete, starting playback")
-                    # Check if any song file exists after download
-                    found_file = False
-                    for ext in ["mp3", "webm", "m4a", "opus"]:
-                        if os.path.exists(f"song.{ext}"):
-                            found_file = True
-                            break
-                    if not found_file:
-                        logger.error("No song file found after download! Skipping this track.")
-                        # Remove from queue and skip
-                        self.queue.pop(0)
-                        self.save_queue()
-                        return
-                    # Only now pop from queue and set current song
+
+                with self.queue_lock:
+                    url, title, duration, requested_by = self.queue[0]
                     self.queue.pop(0)
                     self.save_queue()
                     self.current_song = title
                     self.current_url = url
-                    self.current_duration = duration  # Set duration
-                    self.current_requested_by = requested_by  # Set requested_by
-        
+                    self.current_duration = duration
+                    self.current_requested_by = requested_by
                     self.is_playing = True
-                    # Add song to history
-                    self.history.insert(0, title)
-                    if len(self.history) > self.max_history:
-                        self.history.pop()
-                    # Update stats (pass user if available)
-                    self.update_stats(title, user)
-                    if self.is_playing:  # Check if we should still play this song
-                        self.play_websocket()
+
+                # Check for pre-downloaded file
+                found_file = False
+                song_file = None
+                for ext in ["mp3", "webm", "m4a", "opus"]:
+                    if os.path.exists(f"next_song.{ext}"):
+                        song_file = f"next_song.{ext}"
+                        found_file = True
+                        break
+
+                if found_file:
+                    logger.info(f"Using pre-downloaded file: {song_file}")
+                    # Rename next_song to song for playback
+                    os.rename(song_file, song_file.replace("next_song", "song"))
+                else:
+                    logger.info(f"No pre-downloaded file found, downloading: {title}")
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                            'preferredquality': '192',
+                        }],
+                        'outtmpl': 'song.%(ext)s',  # Use song for current playback
+                        'quiet': True,
+                        'no_warnings': True,
+                        'cookiefile': 'cookies.txt'
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                        found_file = False
+                        for ext in ["mp3", "webm", "m4a", "opus"]:
+                            if os.path.exists(f"song.{ext}"):
+                                found_file = True
+                                break
+                        if not found_file:
+                            logger.error(f"Download failed for: {title}")
+                            return
+
+                self.history.insert(0, title)
+                if len(self.history) > self.max_history:
+                    self.history.pop()
+                self.update_stats(title, user)
+                if self.is_playing:
+                    self.play_websocket()
+
+                with self.queue_lock:
                     self.is_playing = False
                     self.current_song = None
                     self.current_url = None
-                    self.current_duration = None  # Reset duration
+                    self.current_duration = None
                     self.current_requested_by = None
-                    # Start next song if available
+                    # Pre-download the next song if queue is not empty
                     if self.queue:
-                        logger.info("Song finished, queue not empty, calling play_next() recursively")
+                        logger.info("Song finished, queue not empty, pre-downloading next song")
+                        self.pre_download_first_song()
                         self.play_next(user)
                     else:
                         logger.info("Song finished, queue empty")
-                        # Playlist functionality removed
             except Exception as e:
                 logger.error(f"Error in playback thread: {str(e)}")
-                self.is_playing = False
-                self.current_song = None
-                self.current_url = None
-                self.current_duration = None
-                self.current_requested_by = None
-                # Playlist functionality removed
+                with self.queue_lock:
+                    self.is_playing = False
+                    self.current_song = None
+                    self.current_url = None
+                    self.current_duration = None
+                    self.current_requested_by = None
 
-        # Always start playback in a new thread
-        self.playback_thread = threading.Thread(target=play_in_thread)
+        self.playback_thread = Thread(target=play_in_thread)
         self.playback_thread.start()
         logger.info(f"Started playback thread for next song in queue")
-        # Return the next song's title for confirmation
-        if self.queue:
-            url, title, duration, requested_by = self.queue[0]
-            message = (
-    f"\n✨ Now Streaming\n\n"
-    f"📀 Title: {title}\n"
-    f"🕒 Duration: {duration:.2f} minutes\n"
-    f"🧑‍🎧 Requested by: {requested_by}"
-            )
-            return True, message
-        else:
-            return False, "No songs in queue"
+        with self.queue_lock:
+            if self.queue:
+                url, title, duration, requested_by = self.queue[0]
+                message = (
+                    f"\n✨ Now Streaming\n\n"
+                    f"📀 Title: {title}\n"
+                    f"🕒 Duration: {duration:.2f} minutes\n"
+                    f"🧑‍🎧 Requested by: {requested_by}"
+                )
+                return True, message
+            else:
+                return False, "No songs in queue"
 
+    
     def update_stats(self, title, user=None):
         """Updates player statistics."""
         try:
@@ -597,7 +662,8 @@ class Bot(BaseBot):
 
         # Send full queue status (current track + queue)
             queue_status = self.music_player.get_queue_status()
-            await self.highrise.chat(queue_status)
+            await self.send_long_message(queue_status, chunk_size=250)
+          
 
         elif message.startswith('!np'):
             logger.info("Processing now playing command")
