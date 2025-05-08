@@ -408,7 +408,8 @@ class MusicPlayer:
             'current_song': self.current_song,
             'current_url': self.current_url,
             'queue_length': len(self.queue),
-            'queue_songs': [title for _, title in self.queue],
+        # Update this part to handle the 4-element structure in the queue
+            'queue_songs': [title for _, title, _, _ in self.queue],  # Get the title from each queue item
             'volume': self.volume
         }
         logger.info(f"Current state: {state}")
@@ -513,10 +514,10 @@ class Bot(BaseBot):
                     logger.info(f"Song currently playing, adding '{title}' to queue at position {position}")
                     await self.highrise.chat(
     f"\n🪄 Track Queued Successfully\n\n"
-    f"┌───〔 🎵 Title: {title} 〕\n"
-    f"├───〔 ⏱️ Duration: {duration:.2f} min 〕\n"
-    f"├───〔 📌 Position: #{position} 〕\n"
-    f"└───〔 🧑‍💼 Requested by: {user.username} 〕"
+    f"〔 🎵 Title: {title} 〕\n"
+    f"〔 ⏱️ Duration: {duration:.2f} min 〕\n"
+    f"〔 📌 Position: #{position} 〕\n"
+    f"〔 🧑‍💼 Requested by: {user.username} 〕"
                     )
                 else:
                     logger.info(f"No song playing, starting '{title}' immediately")
@@ -526,9 +527,9 @@ class Bot(BaseBot):
                     if success:
                         await self.highrise.chat(
     f"\n✨ Now Playing\n\n"
-    f"┌───〔 🎶 Title: {title} 〕\n"
-    f"├───〔 ⏱️ Duration: {duration:.2f} min 〕\n"
-    f"└───〔 🧑‍💼 Requested by: {user.username} 〕"
+    f"〔 🎶 Title: {title} 〕\n"
+    f"〔 ⏱️ Duration: {duration:.2f} min 〕\n"
+    f"〔 🧑‍💼 Requested by: {user.username} 〕"
                         )
                     else:
                         await self.highrise.send_whisper(user.id, f"❌ Error playing song: {result}")
