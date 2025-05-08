@@ -163,6 +163,25 @@ class MusicPlayer:
         )
         return queue_length, message
 
+    def delete_user_song(self, username):
+        """Delete the most recent song requested by the user from the queue"""
+        if not self.queue:
+            logger.info(f"No songs in queue to delete for user: {username}")
+            return False, "📋 Queue is empty"
+
+        # Find the most recent song by this user (last occurrence in the queue)
+        for i in range(len(self.queue) - 1, -1, -1):  # Iterate backwards
+            url, title, duration, requested_by = self.queue[i]
+            if requested_by == username:
+            # Remove the song
+                self.queue.pop(i)
+                self.save_queue()  # Save updated queue
+                logger.info(f"Deleted song '{title}' requested by {username} from queue")
+                return True, f"🗑️ Removed from queue:\nTitle: {title}\nDuration: {duration:.2f} minutes\nRequested by: {username}"
+    
+        logger.info(f"No songs found in queue requested by {username}")
+        return False, f"❌ No songs found in queue requested by {username}"
+
     def get_current_song(self):
         """Get information about the currently playing song"""
         if self.current_song and self.is_playing and self.current_duration is not None and self.current_requested_by is not None:
@@ -176,30 +195,39 @@ class MusicPlayer:
 
     
     def get_queue(self):
-        """Get the queue status separately from current song"""
+        """Get the queue status in a professional format"""
         if not self.queue:
             return "📋 Queue is empty"
 
-        queue_list = "📋 Next in Queue:\n"
-        for i, (_, title) in enumerate(self.queue, 1):
-            queue_list += f"{i}. {title}\n"
+        total_tracks = len(self.queue)
+        track_word = "Track" if total_tracks == 1 else "Tracks"
+        queue_list = f"📋 Total {total_tracks} {track_word} in queue:\n"
+
+        for i, (_, title, duration, requested_by) in enumerate(self.queue, 1):
+            queue_list += (
+    f"{i}. 𝗧𝗶𝘁𝗹𝗲: {title}\n"
+    f"   🔹𝗗𝘂𝗿𝗮𝘁𝗶𝗼𝗻: {duration:.2f} minutes\n"
+    f"   🔹𝗥𝗲𝗾𝘂𝗲𝘀𝘁𝗲𝗱 𝗯𝘆: {requested_by}\n"
+            )
+
         return queue_list
 
     def get_queue_status(self):
         """Get a formatted display of all music parts"""
         parts = []
 
-        # Part 1: Currently Playing
+    # Part 1: Currently Playing
         current = self.get_current_song()
-        parts.append(f"=== PART 1: CURRENT TRACK ===\n{current}")
-
-        # Part 2: Queue
-        if self.queue:
-            queue_list = "\n".join(f"{i}. {title}" for i, (_, title) in enumerate(self.queue, 1))
-            parts.append(f"\n=== PART 2: QUEUE ({len(self.queue)} tracks) ===\n{queue_list}")
-        else:
-            parts.append("\n=== PART 2: QUEUE ===\n📋 Queue is empty")
-
+        parts.append(
+    f"🎧 𝗖𝗨𝗥𝗥𝗘𝗡𝗧 𝗧𝗥𝗔𝗖𝗞 🎧\n"
+    f"{current}"
+        )
+    # Part 2: Queue
+        queue = self.get_queue()
+        parts.append(
+    f"\n📂 𝗤𝗨𝗘𝗨𝗘 📂\n"
+    f"{queue}"
+        )
         return "\n".join(parts)
 
     def skip_song(self):
@@ -380,9 +408,12 @@ class MusicPlayer:
             logger.error(f"Error updating stats: {e}")
 
     def set_volume(self, volume_percentage):
-        """Set the playback volume (0-100)"""
-        self.volume = max(0, min(100, volume_percentage))
-        logger.info(f"Volume set to {self.volume}%")
+        """Set the playback volume (0-300)"""
+        self.volume = max(0, min(300, volume_percentage))  # Allow up to 300%
+        if self.volume > 100:
+            logger.warning(f"Volume set to {self.volume}% (>100% may cause distortion)")
+        else:
+            logger.info(f"Volume set to {self.volume}%")
         return self.volume
 
     def play_websocket(self):
@@ -403,18 +434,21 @@ class MusicPlayer:
             logger.error("No downloaded song file found for playback!")
             return
 
-        # Calculate volume filter value (ffmpeg uses scale of 0.0-1.0 for volume)
+        # Calculate volume filter value (ffmpeg uses scale of 0.0-3.0 for volume)
         volume_factor = self.volume / 100.0
+    # Use alimiter to prevent clipping at high volumes
+        audio_filter = f"volume={volume_factor},alimiter=limit=0.95:level_in=1"
+    
         ffmpeg_command = [
-            'ffmpeg',
-            '-re',                    # Read input at native frame rate
-            '-i', song_file,          # Input audio file
-            '-af', f'volume={volume_factor}',  # Apply volume adjustment
-            '-f', 'mp3',              # Output format
-            '-vn',                    # Disable video recording
-            '-content_type', 'audio/mpeg',  # Set content type for Icecast
-            'icecast://Habibi_78:alkama789@live.radioking.com:80/pop-country-radio67'  # Updated Icecast server URL
-        ]
+        'ffmpeg',
+        '-re',                    # Read input at native frame rate
+        '-i', song_file,          # Input audio file
+        '-af', audio_filter,      # Apply volume adjustment with limiter
+        '-f', 'mp3',              # Output format
+        '-vn',                    # Disable video recording
+        '-content_type', 'audio/mpeg',  # Set content type for Icecast
+        'icecast://Habibi_78:alkama789@live.radioking.com:80/pop-country-radio67'  # Icecast server URL
+    ]
 
         try:
             logger.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
@@ -531,7 +565,7 @@ class Bot(BaseBot):
                     await self.highrise.chat(f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
 
             logger.info(f"Processing play command for query: {search_query}")
-            await self.highrise.chat(f"🔍 Searching for: {search_query}")
+            await self.highrise.chat(f"[🔍] Processing Your Request for: {search_query}")
             url, title, duration, error = self.music_player.search_song(search_query)
             
             if error == "too_long":
@@ -561,33 +595,20 @@ class Bot(BaseBot):
             logger.info("Processing queue command")
             self.music_player._test_state()
 
-            # Send current track status
-            current_song = self.music_player.get_current_song()
-            await self.highrise.chat(f"=== PART 1: CURRENT TRACK ===\n{current_song}\n Requested by @{user.username}")
-
-            # Handle queue display in chunks of 5 songs
-            if self.music_player.queue:
-                total_songs = len(self.music_player.queue)
-                chunk_size = 5
-
-                for chunk_start in range(0, total_songs, chunk_size):
-                    chunk_end = min(chunk_start + chunk_size, total_songs)
-                    part_number = chunk_start // chunk_size + 2  # Start from Part 2
-
-                    message = f"=== PART {part_number}: QUEUE (Songs {chunk_start + 1}-{chunk_end} of {total_songs}) ===\n"
-                    chunk_songs = [f"{i}. {title}" for i, (_, title) in 
-                                 enumerate(self.music_player.queue[chunk_start:chunk_end], chunk_start + 1)]
-                    message += "\n".join(chunk_songs)
-
-                    await self.highrise.chat(message)
-            else:
-                await self.highrise.chat("=== PART 2: QUEUE ===\n📋 Queue is empty")
+        # Send full queue status (current track + queue)
+            queue_status = self.music_player.get_queue_status()
+            await self.highrise.chat(queue_status)
 
         elif message.startswith('!np'):
             logger.info("Processing now playing command")
             current_song = self.music_player.get_current_song()
             await self.highrise.chat(current_song)
 
+        elif message.startswith('!delq'):
+            logger.info(f"Processing delete song command for user: {user.username}")
+            success, result = self.music_player.delete_user_song(user.username)
+            await self.highrise.send_whisper(user.id, result)
+        
         elif message.startswith('!help'):
             logger.info("Processing help command")
             help_text_header = "🎵 **Music Bot Commands** 🎵"
@@ -596,18 +617,19 @@ class Bot(BaseBot):
                 "!q - Show current queue\n"
                 "!np - Show currently playing song\n"
                 "!skip - Skip to next song\n"
+                "!delq - Delete your recent song from the queue\n"
                 "!clearq - Clear the song queue\n"
                 "!help - Show this help message\n"
                 "!stats - Show player statistics\n"
             )
             help_text_ticket = (
-                "🎫 **Ticket System Commands** 🎫\n"
+                "🎫 Ticket System Commands 🎫\n"
                 "!tickets - Check how many music tickets you have (1 ticket = 1 song)\n"
                 "!ticketsystem - Enable ticket mode (users need tickets to request songs) [Owner only]\n"
                 "!freesystem - Return to free music mode (anyone can request songs) [Owner only]\n"
             )
             help_text_owner = (
-                "👑 **Owner Commands** 👑\n"
+                "👑 Owner Commands👑\n"
                 "!give @username 100tk - Give tickets to a user\n"
             )
             await self.send_long_message(help_text_header, chunk_size=150)
@@ -674,14 +696,20 @@ class Bot(BaseBot):
         elif message.startswith('!volume'):
             try:
                 volume_level = message.split(' ')[1]
-                if volume_level.isdigit() and 0 <= int(volume_level) <= 100:
+                if volume_level.isdigit() and 0 <= int(volume_level) <= 300:  # Allow up to 300
                     logger.info(f"Setting volume to {volume_level}%")
                     self.music_player.set_volume(int(volume_level))
-                    await self.highrise.chat(f"🔊 Volume set to {volume_level}%")
+                    if int(volume_level) > 100:
+                        await self.highrise.chat(f"🔊 Volume set to {volume_level}% (⚠️ High volumes may cause distortion)")
+                    else:
+                        await self.highrise.chat(f"🔊 Volume set to {volume_level}%")
                 else:
-                    await self.highrise.chat("❌ Volume must be a number between 0 and 100")
+                    await self.highrise.chat("❌ Volume must be a number between 0 and 300")
             except IndexError:
-                await self.highrise.chat("❌ Please specify a volume level, e.g., !volume 50")
+                await self.highrise.chat("❌ Please specify a volume level, e.g., !volume 150")
+
+
+        
         elif message.startswith('!stats'):
             logger.info("Processing stats command")
             stats_text = "\U0001F4CA Player Statistics:\n"
