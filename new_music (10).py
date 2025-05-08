@@ -233,19 +233,21 @@ class MusicPlayer:
 
     def play_next(self, user=None):
         logger.info("play_next called")
-        # Playlist functionality removed
+
         if not self.queue:
             logger.info("No songs in queue to play in play_next")
             self.is_playing = False
             self.current_song = None
             self.current_url = None
-            self.save_queue()  # Save queue if now empty
+            self.save_queue()
             return False, "No songs in queue"
+
         def play_in_thread():
             try:
                 import glob
                 import os
-                # Clean up old song files before download
+
+            # Clean up old song files before download
                 for ext in ["mp3", "webm", "m4a", "opus"]:
                     for f in glob.glob(f"song.{ext}"):
                         try:
@@ -253,80 +255,88 @@ class MusicPlayer:
                             logger.info(f"Deleted old file: {f}")
                         except Exception as e:
                             logger.error(f"Error deleting old file {f}: {e}")
-                url, title = self.queue[0]  # Peek at the first song
+
+            # Validate queue item format
+                if not isinstance(self.queue[0], tuple) or len(self.queue[0]) != 2:
+                    logger.error(f"Invalid queue entry: {self.queue[0]}, expected (url, title)")
+                    self.queue.pop(0)
+                    self.save_queue()
+                    return
+
+                url, title = self.queue[0]
+
                 ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'outtmpl': 'song.%(ext)s',
-                    'quiet': True,
-                    'no_warnings': True,
-                    'cookiefile': 'cookies.txt'
-                }
-                # Add a random sleep interval before downloading
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': 'song.%(ext)s',
+                'quiet': True,
+                'no_warnings': True,
+                'cookiefile': 'cookies.txt'
+            }
+
                 sleep_time = random.randint(5, 15)
                 logger.info(f"Sleeping for {sleep_time} seconds before downloading to mimic human behavior.")
                 time.sleep(sleep_time)
+
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     logger.info(f"Downloading song: {title}")
                     result = ydl.download([url])
                     logger.info("Download complete, starting playback")
-                    # Check if any song file exists after download
+
                     found_file = False
                     for ext in ["mp3", "webm", "m4a", "opus"]:
                         if os.path.exists(f"song.{ext}"):
                             found_file = True
                             break
+
                     if not found_file:
                         logger.error("No song file found after download! Skipping this track.")
-                        # Remove from queue and skip
                         self.queue.pop(0)
                         self.save_queue()
                         return
-                    # Only now pop from queue and set current song
+
                     self.queue.pop(0)
                     self.save_queue()
                     self.current_song = title
                     self.current_url = url
                     self.is_playing = True
-                    # Add song to history
                     self.history.insert(0, title)
                     if len(self.history) > self.max_history:
                         self.history.pop()
-                    # Update stats (pass user if available)
                     self.update_stats(title, user)
-                    if self.is_playing:  # Check if we should still play this song
+
+                    if self.is_playing:
                         self.play_websocket()
+
                     self.is_playing = False
                     self.current_song = None
                     self.current_url = None
-                    # Start next song if available
+
                     if self.queue:
                         logger.info("Song finished, queue not empty, calling play_next() recursively")
                         self.play_next(user)
                     else:
                         logger.info("Song finished, queue empty")
-                        # Playlist functionality removed
+
             except Exception as e:
                 logger.error(f"Error in playback thread: {str(e)}")
                 self.is_playing = False
                 self.current_song = None
                 self.current_url = None
-                # Playlist functionality removed
 
-        # Always start playback in a new thread
         self.playback_thread = threading.Thread(target=play_in_thread)
         self.playback_thread.start()
         logger.info(f"Started playback thread for next song in queue")
-        # Return the next song's title for confirmation
-        if self.queue:
+
+        if self.queue and isinstance(self.queue[0], tuple) and len(self.queue[0]) == 2:
             return True, self.queue[0][1]
         else:
             return False, "No songs in queue"
-
+    
     def update_stats(self, title, user=None):
         """Updates player statistics."""
         try:
