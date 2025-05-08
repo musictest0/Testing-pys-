@@ -9,6 +9,7 @@ import logging
 import yt_dlp
 from googleapiclient.discovery import build
 import threading
+from threading import Lock, Thread 
 import random
 import glob
 import time  # Added for sleep intervals
