@@ -479,7 +479,7 @@ class Bot(BaseBot):
             last_time = self.last_request_time.get(user.username, 0)
             if now - last_time < cooldown:
                 wait_time = int(cooldown - (now - last_time))
-                await self.highrise.chat(f"⏳ @{user.username}, please wait {wait_time} seconds before requesting another song.")
+                await self.highrise.send_whisper(user.id, f"⏳ @{user.username}, please wait {wait_time} seconds before requesting another song.")
                 return
             self.last_request_time[user.username] = now
             # Check if ticket mode is enabled and user is not an owner
@@ -487,42 +487,53 @@ class Bot(BaseBot):
                 # Check if user has available tickets
                 tickets_count = self.get_user_tickets(user.username)
                 if tickets_count <= 0:
-                    await self.highrise.chat(f"❌ {user.username}, you don't have any tickets to request songs. Your wallet has 0 tickets.")
+                    await self.highrise.send_whisper(user.id, f"❌ {user.username}, you don't have any tickets to request songs. Your wallet has 0 tickets.")
                     return
                 else:
                     # Use one ticket for this request
                     success = self.use_ticket(user.username)
                     if not success:
-                        await self.highrise.chat(f"❌ {user.username}, ticket deduction failed. Please try again.")
+                        await self.highrise.send_whisper(user.id, f"❌ {user.username}, ticket deduction failed. Please try again.")
                         return
                     remaining = self.get_user_tickets(user.username)
-                    await self.highrise.chat(f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
+                    await self.highrise.send_whisper(user.id, f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
 
             logger.info(f"Processing play command for query: {search_query}")
-            await self.highrise.chat(f"🔍 Searching for: {search_query}")
-            url, title, error = self.music_player.search_song(search_query)
-
+            await self.highrise.send_whisper(user.id, f"🔍 Processing Your Request for: {search_query}")
+            url, title, error, duration = self.music_player.search_song(search_query)
+            
             if error == "too_long":
-                await self.highrise.chat("❌ This song exceeds the 10-minute duration limit")
+                await self.highrise.send_whisper(user.id, "❌ This song exceeds the 10-minute duration limit")
             elif url and title:
-                position = self.music_player.add_to_queue(url, title)
+                position = self.music_player.add_to_queue(url, title, user.username, duration)
                 # Log the state after adding to queue
                 self.music_player._test_state()
 
                 if self.music_player.is_playing:
                     logger.info(f"Song currently playing, adding '{title}' to queue at position {position}")
-                    await self.highrise.chat(f"✅ Added to queue (position {position}): {title}")
+                    await self.highrise.chat(
+    f"\n🪄 Track Queued Successfully\n\n"
+    f"┌───〔 🎵 Title: {title} 〕\n"
+    f"├───〔 ⏱️ Duration: {duration:.2f} min 〕\n"
+    f"├───〔 📌 Position: #{position} 〕\n"
+    f"└───〔 🧑‍💼 Requested by: {user.username} 〕"
+                    )
                 else:
                     logger.info(f"No song playing, starting '{title}' immediately")
                     success, result = self.music_player.play_next(user)
                     # Log the state after starting playback
                     self.music_player._test_state()
                     if success:
-                        await self.highrise.chat(f"🎵 Now playing: {result}")
+                        await self.highrise.chat(
+    f"\n✨ Now Playing\n\n"
+    f"┌───〔 🎶 Title: {title} 〕\n"
+    f"├───〔 ⏱️ Duration: {duration:.2f} min 〕\n"
+    f"└───〔 🧑‍💼 Requested by: {user.username} 〕"
+                        )
                     else:
-                        await self.highrise.chat(f"❌ Error playing song: {result}")
+                        await self.highrise.send_whisper(user.id, f"❌ Error playing song: {result}")
             else:
-                await self.highrise.chat("❌ Could not find the song")
+                await self.highrise.send_whisper(user.id, "❌ Could not find the song")
 
         elif message.startswith('!q'):
             logger.info("Processing queue command")
