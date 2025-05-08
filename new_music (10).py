@@ -120,7 +120,7 @@ class MusicPlayer:
                     logger.warning(f"Song too long: {duration_minutes:.2f} minutes")
                     return None, None, "too_long"
 
-            return video_url, title, None
+            return video_url, title, duration_minutes, None
         except Exception as e:
             logger.error(f"Error searching song: {str(e)}")
             return None, None, None
@@ -147,20 +147,34 @@ class MusicPlayer:
             logger.error(f"Error loading queue: {e}")
             self.queue = []
 
-    def add_to_queue(self, url, title):
+    def add_to_queue(self, url, title, duration, requested_by):
+  
         global music_queue
-        self.queue.append((url, title))
+        self.queue.append((url, title, duration, requested_by))
         self.save_queue()  # Save queue after adding
         queue_length = len(self.queue)
         logger.info(f"Added song to queue: {title}, Queue length: {queue_length}")
-        return queue_length
+        message = (
+    f"\n🎧 Track successfully added!\n\n"
+    f" 〔 🎼 Title: {title} 〕\n"
+    f" 〔 ⏱️ Duration: {duration:.2f} min 〕\n"
+    f" 〔 🔖 Queue Position: #{queue_length} 〕\n"
+    f" 〔 👤 Requested by: {requested_by} 〕"
+        )
+        return queue_length, message
 
     def get_current_song(self):
         """Get information about the currently playing song"""
-        if self.current_song and self.is_playing:
-            return f"🎵 Now Playing: {self.current_song}"
+        if self.current_song and self.is_playing and self.current_duration is not None and self.current_requested_by is not None:
+            return (
+            f"🎵 Now Playing:\n"
+            f"Title: {self.current_song}\n"
+            f"Duration: {self.current_duration:.2f} minutes\n"
+            f"Requested by: {self.current_requested_by}"
+        )
         return "🔇 No song currently playing"
 
+    
     def get_queue(self):
         """Get the queue status separately from current song"""
         if not self.queue:
@@ -239,6 +253,9 @@ class MusicPlayer:
             self.is_playing = False
             self.current_song = None
             self.current_url = None
+            self.current_duration = None  # Reset duration
+            self.current_requested_by = None  # Reset requested_by
+       
             self.save_queue()  # Save queue if now empty
             return False, "No songs in queue"
         def play_in_thread():
@@ -253,7 +270,8 @@ class MusicPlayer:
                             logger.info(f"Deleted old file: {f}")
                         except Exception as e:
                             logger.error(f"Error deleting old file {f}: {e}")
-                url, title = self.queue[0]  # Peek at the first song
+                url, title, duration, requested_by = self.queue[0]  # Peek at the first song
+        
                 ydl_opts = {
                     'format': 'bestaudio/best',
                     'postprocessors': [{
@@ -291,6 +309,9 @@ class MusicPlayer:
                     self.save_queue()
                     self.current_song = title
                     self.current_url = url
+                    self.current_duration = duration  # Set duration
+                    self.current_requested_by = requested_by  # Set requested_by
+        
                     self.is_playing = True
                     # Add song to history
                     self.history.insert(0, title)
@@ -303,6 +324,8 @@ class MusicPlayer:
                     self.is_playing = False
                     self.current_song = None
                     self.current_url = None
+                    self.current_duration = None  # Reset duration
+                    self.current_requested_by = None
                     # Start next song if available
                     if self.queue:
                         logger.info("Song finished, queue not empty, calling play_next() recursively")
@@ -315,6 +338,8 @@ class MusicPlayer:
                 self.is_playing = False
                 self.current_song = None
                 self.current_url = None
+                self.current_duration = None
+                self.current_requested_by = None
                 # Playlist functionality removed
 
         # Always start playback in a new thread
@@ -323,7 +348,14 @@ class MusicPlayer:
         logger.info(f"Started playback thread for next song in queue")
         # Return the next song's title for confirmation
         if self.queue:
-            return True, self.queue[0][1]
+            url, title, duration, requested_by = self.queue[0]
+            message = (
+    f"\n✨ Now Streaming\n\n"
+    f"〔 📀 Title: {title} 〕\n"
+    f"〔 🕒 Duration: {duration:.2f} minutes 〕\n"
+    f"〔 🧑‍🎧 Requested by: {requested_by} 〕"
+            )
+            return True, message
         else:
             return False, "No songs in queue"
 
@@ -408,7 +440,7 @@ class MusicPlayer:
             'current_song': self.current_song,
             'current_url': self.current_url,
             'queue_length': len(self.queue),
-            'queue_songs': [title for _, title in self.queue],
+            'queue_songs': [(title, duration, requested_by) for _, title, duration, requested_by in self.queue],
             'volume': self.volume
         }
         logger.info(f"Current state: {state}")
@@ -500,30 +532,31 @@ class Bot(BaseBot):
 
             logger.info(f"Processing play command for query: {search_query}")
             await self.highrise.chat(f"🔍 Searching for: {search_query}")
-            url, title, error = self.music_player.search_song(search_query)
-
+            url, title, duration, error = self.music_player.search_song(search_query)
+            
             if error == "too_long":
                 await self.highrise.chat("❌ This song exceeds the 10-minute duration limit")
-            elif url and title:
-                position = self.music_player.add_to_queue(url, title)
-                # Log the state after adding to queue
+            elif url and title and duration is not None:
+                position, queue_message = self.music_player.add_to_queue(url, title, duration, user.username)
+            # Log the state after adding to queue
                 self.music_player._test_state()
 
+                await self.highrise.chat(queue_message)
                 if self.music_player.is_playing:
-                    logger.info(f"Song currently playing, adding '{title}' to queue at position {position}")
-                    await self.highrise.chat(f"✅ Added to queue (position {position}): {title}")
+                    logger.info(f"Song currently playing, added '{title}' to queue at position {position}")
                 else:
                     logger.info(f"No song playing, starting '{title}' immediately")
                     success, result = self.music_player.play_next(user)
                     # Log the state after starting playback
                     self.music_player._test_state()
                     if success:
-                        await self.highrise.chat(f"🎵 Now playing: {result}")
+                        await self.highrise.chat(result)
                     else:
                         await self.highrise.chat(f"❌ Error playing song: {result}")
             else:
                 await self.highrise.chat("❌ Could not find the song")
 
+        
         elif message.startswith('!q'):
             logger.info("Processing queue command")
             self.music_player._test_state()
