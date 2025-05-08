@@ -256,14 +256,15 @@ class MusicPlayer:
                         except Exception as e:
                             logger.error(f"Error deleting old file {f}: {e}")
 
-            # Validate queue item format
-                if not isinstance(self.queue[0], tuple) or len(self.queue[0]) != 2:
-                    logger.error(f"Invalid queue entry: {self.queue[0]}, expected (url, title)")
+                # Unpack full 4-value tuple
+                song_entry = self.queue[0]
+                if not isinstance(song_entry, (tuple, list)) or len(song_entry) < 2:
+                    logger.error(f"Invalid queue entry: {song_entry}, expected at least (url, title)")
                     self.queue.pop(0)
                     self.save_queue()
                     return
 
-                url, title = self.queue[0]
+                url, title, duration, requested_by = song_entry
 
                 ydl_opts = {
                 'format': 'bestaudio/best',
