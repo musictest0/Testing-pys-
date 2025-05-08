@@ -156,10 +156,10 @@ class MusicPlayer:
         logger.info(f"Added song to queue: {title}, Queue length: {queue_length}")
         message = (
     f"\n🎧 Track successfully added!\n\n"
-    f" 〔 🎼 Title: {title} 〕\n"
-    f" 〔 ⏱️ Duration: {duration:.2f} min 〕\n"
-    f" 〔 🔖 Queue Position: #{queue_length} 〕\n"
-    f" 〔 👤 Requested by: {requested_by} 〕"
+    f"🎼 Title: {title}\n"
+    f"⏱️ Duration: {duration:.2f} min\n"
+    f"🔖 Queue Position: #{queue_length}\n"
+    f"👤 Requested by: {requested_by}"
         )
         return queue_length, message
 
@@ -167,11 +167,11 @@ class MusicPlayer:
         """Get information about the currently playing song"""
         if self.current_song and self.is_playing and self.current_duration is not None and self.current_requested_by is not None:
             return (
-            f"🎵 Now Playing:\n"
-            f"Title: {self.current_song}\n"
-            f"Duration: {self.current_duration:.2f} minutes\n"
-            f"Requested by: {self.current_requested_by}"
-        )
+    f"\n🔊 Currently Streaming\n\n"
+    f"🎵 Title: {self.current_song}\n"
+    f"⏱️ Duration: {self.current_duration:.2f} min\n"
+    f"👤 Requested by: {self.current_requested_by}"
+            )
         return "🔇 No song currently playing"
 
     
@@ -351,9 +351,9 @@ class MusicPlayer:
             url, title, duration, requested_by = self.queue[0]
             message = (
     f"\n✨ Now Streaming\n\n"
-    f"〔 📀 Title: {title} 〕\n"
-    f"〔 🕒 Duration: {duration:.2f} minutes 〕\n"
-    f"〔 🧑‍🎧 Requested by: {requested_by} 〕"
+    f"📀 Title: {title}\n"
+    f"🕒 Duration: {duration:.2f} minutes\n"
+    f"🧑‍🎧 Requested by: {requested_by}"
             )
             return True, message
         else:
