@@ -215,32 +215,32 @@ class MusicPlayer:
             return queue_length, message
 
     def delete_user_song(self, username):
-    with self.queue_lock:
-        if not self.queue:
-            logger.info(f"No songs in queue to delete for user: {username}")
-            return False, "📋 Queue is empty"
+        with self.queue_lock:
+            if not self.queue:
+                logger.info(f"No songs in queue to delete for user: {username}")
+                return False, "📋 Queue is empty"
 
-        for i in range(len(self.queue) - 1, -1, -1):
-            url, title, duration, requested_by = self.queue[i]
-            if requested_by == username:
-                was_first = (i == 0)  # Check if the deleted song was first
-                self.queue.pop(i)
-                self.save_queue()
-                logger.info(f"Deleted song '{title}' requested by {username} from queue")
+            for i in range(len(self.queue) - 1, -1, -1):
+                url, title, duration, requested_by = self.queue[i]
+                if requested_by == username:
+                    was_first = (i == 0)  # Check if the deleted song was first
+                    self.queue.pop(i)
+                    self.save_queue()
+                    logger.info(f"Deleted song '{title}' requested by {username} from queue")
                 # If the first song was deleted, clean up pre-downloaded files and pre-download new first song
-                if was_first:
-                    for ext in ["mp3", "webm", "m4a", "opus"]:
-                        for f in glob.glob(f"next_song.{ext}"):
-                            try:
-                                os.remove(f)
-                                logger.info(f"Deleted pre-downloaded file: {f}")
-                            except Exception as e:
-                                logger.error(f"Error deleting pre-downloaded file {f}: {e}")
-                    self.pre_download_first_song()
-                return True, f"🗑️ Removed from queue:\nTitle: {title}\nDuration: {duration:.2f} minutes\nRequested by: {username}"
+                    if was_first:
+                        for ext in ["mp3", "webm", "m4a", "opus"]:
+                            for f in glob.glob(f"next_song.{ext}"):
+                                try:
+                                    os.remove(f)
+                                    logger.info(f"Deleted pre-downloaded file: {f}")
+                                except Exception as e:
+                                    logger.error(f"Error deleting pre-downloaded file {f}: {e}")
+                        self.pre_download_first_song()
+                    return True, f"🗑️ Removed from queue:\nTitle: {title}\nDuration: {duration:.2f} minutes\nRequested by: {username}"
         
-        logger.info(f"No songs found in queue requested by {username}")
-        return False, f"❌ No songs found in queue requested by {username}"
+            logger.info(f"No songs found in queue requested by {username}")
+            return False, f"❌ No songs found in queue requested by {username}"
 
     
     def get_current_song(self):
