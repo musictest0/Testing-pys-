@@ -60,7 +60,9 @@ class MusicPlayer:
         self.load_queue()  # Load queue from file on initialization
         self.ffmpeg_process = None  # Add FFmpeg process reference
         self.playlist_process = None  # Add playlist process reference
-        
+        self.download_dir = "downloads"  # New: Directory for downloaded files
+        # Ensure download directory exists
+        os.makedirs(self.download_dir, exist_ok=True)
         logger.info("MusicPlayer initialized")
         self.pre_download_first_song()
 
@@ -112,8 +114,8 @@ class MusicPlayer:
                         return
                     url, title, duration, requested_by = self.queue[0]
                     ydl_opts = self.ydl_opts.copy()
-                    ydl_opts['outtmpl'] = 'next_song.%(ext)s'  # Use different filename for pre-download
-
+                    ydl_opts['outtmpl'] = os.path.join(self.download_dir, 'next_song.%(ext)s')  # Save to downloads/
+                    
                 logger.info(f"Pre-downloading first song in queue: {title}")
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.download([url])
@@ -237,13 +239,24 @@ class MusicPlayer:
     def cleanup_pre_downloaded_files(self):
         """Clean up pre-downloaded files (next_song.*)"""
         for ext in ["mp3", "webm", "m4a", "opus"]:
-            for f in glob.glob(f"next_song.{ext}"):
+            for f in glob.glob(os.path.join(self.download_dir, f"next_song.{ext}")):
                 try:
                     os.remove(f)
                     logger.info(f"Deleted pre-downloaded file: {f}")
                 except Exception as e:
                     logger.error(f"Error deleting pre-downloaded file {f}: {e}")
-            
+
+    def cleanup_current_song_files(self):
+        """Clean up current song files (song.*)"""
+        for ext in ["mp3", "webm", "m4a", "opus"]:
+            for f in glob.glob(os.path.join(self.download_dir, f"song.{ext}")):
+                try:
+                    os.remove(f)
+                    logger.info(f"Deleted current song file: {f}")
+                except Exception as e:
+                    logger.error(f"Error deleting current song file {f}: {e}")
+
+    
     def get_current_song(self):
         """Get information about the currently playing song"""
         if self.current_song and self.is_playing and self.current_duration is not None and self.current_requested_by is not None:
@@ -375,14 +388,13 @@ class MusicPlayer:
                 # Check for pre-downloaded file
                 song_file = None
                 for ext in ["mp3", "webm", "m4a", "opus"]:
-                    if os.path.exists(f"next_song.{ext}"):
-                        song_file = f"next_song.{ext}"
-                        logger.info(f"Using pre-downloaded file: {song_file}")
-                        # Rename to song.<ext> for playback
-                        os.rename(song_file, f"song.{ext}")
+                    next_file = os.path.join(self.download_dir, f"next_song.{ext}")
+                    if os.path.exists(next_file):
+                        song_file = os.path.join(self.download_dir, f"song.{ext}")
+                        logger.info(f"Using pre-downloaded file: {next_file}")
+                        os.rename(next_file, song_file)
                         break
 
-                # If no pre-downloaded file, download now
                 if not song_file:
                     ydl_opts = self.ydl_opts.copy()
                     logger.info(f"No pre-downloaded file found, downloading: {title}")
@@ -390,10 +402,9 @@ class MusicPlayer:
                         ydl.download([url])
                         logger.info("Download complete")
 
-                    # Verify the file exists
                     for ext in ["mp3", "webm", "m4a", "opus"]:
-                        if os.path.exists(f"song.{ext}"):
-                            song_file = f"song.{ext}"
+                        if os.path.exists(os.path.join(self.download_dir, f"song.{ext}")):
+                            song_file = os.path.join(self.download_dir, f"song.{ext}")
                             break
                     if not song_file:
                         logger.error(f"No downloaded file found for: {title}")
@@ -404,7 +415,7 @@ class MusicPlayer:
                             self.current_duration = None
                             self.current_requested_by = None
                         return
-
+                        
                 self.history.insert(0, title)
                 if len(self.history) > self.max_history:
                     self.history.pop()
