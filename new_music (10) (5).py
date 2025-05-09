@@ -41,6 +41,9 @@ class MusicPlayer:
         self.api_key = 'AIzaSyCuQwsagMLGToKlbNMEf7plFEkKhbr-DWs'
         self.volume = 100  # Default volume (percentage)
         self.queue_lock = Lock()
+        self.download_dir = "downloads"  # Directory for downloaded files
+        os.makedirs(self.download_dir, exist_ok=True)  # Create downloads/ if it doesn't exist
+  
         self.ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -55,9 +58,7 @@ class MusicPlayer:
         }
         self.playback_thread = None
         self.download_thread = None  # New: Thread for pre-downloading
-        self.download_dir = "downloads"  # Directory for downloaded files
-        os.makedirs(self.download_dir, exist_ok=True)  # Create downloads/ if it doesn't exist
-  
+        
         self.is_playing = False
         self.stats = self.load_stats() # Load stats on initialization
         self.load_queue()  # Load queue from file on initialization
