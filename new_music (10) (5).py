@@ -48,27 +48,22 @@ class MusicPlayer:
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
+            'outtmpl': os.path.join(self.download_dir, 'song.%(ext)s'),  # Save to downloads/
             'quiet': True,
             'no_warnings': True,
             'cookiefile': 'cookies.txt'
         }
         self.playback_thread = None
         self.download_thread = None  # New: Thread for pre-downloading
-     
+        self.download_dir = "downloads"  # Directory for downloaded files
+        os.makedirs(self.download_dir, exist_ok=True)  # Create downloads/ if it doesn't exist
+  
         self.is_playing = False
         self.stats = self.load_stats() # Load stats on initialization
         self.load_queue()  # Load queue from file on initialization
         self.ffmpeg_process = None  # Add FFmpeg process reference
         self.playlist_process = None  # Add playlist process reference
-        self.download_dir = os.path.abspath("downloads")
-        # Ensure download directory exists with proper permissions
-        try:
-            os.makedirs(self.download_dir, exist_ok=True)
-            os.chmod(self.download_dir, 0o755)
-            logger.info(f"Created/verified downloads directory: {self.download_dir}")
-        except Exception as e:
-            logger.error(f"Failed to create downloads directory {self.download_dir}: {e}")
-            raise
+        
             
         logger.info("MusicPlayer initialized")
         self.pre_download_first_song()
@@ -105,6 +100,7 @@ class MusicPlayer:
             logger.error(f"Error saving stats: {e}")
 
     def pre_download_first_song(self):
+        """Start pre-downloading the first song in the queue if it exists"""
         with self.queue_lock:
             if not self.queue:
                 logger.info("No songs in queue to pre-download")
@@ -112,33 +108,37 @@ class MusicPlayer:
             if self.download_thread and self.download_thread.is_alive():
                 logger.info("Pre-download already in progress")
                 return
-            url, title, duration, requested_by = self.queue[0]
 
         def download_task():
             try:
-                ydl_opts = self.ydl_opts.copy()
-                ydl_opts['outtmpl'] = os.path.join(self.download_dir, 'next_song.%(ext)s')
-                logger.info(f"Pre-downloading song: {title} to {ydl_opts['outtmpl']}")
+                with self.queue_lock:
+                    if not self.queue:
+                        return
+                    url, title, duration, requested_by = self.queue[0]
+                    ydl_opts = self.ydl_opts.copy()
+                    ydl_opts['outtmpl'] = os.path.join(self.download_dir, 'next_song.%(ext)s')
+
+                logger.info(f"Pre-downloading first song in queue: {title}")
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                    result = ydl.download([url])
                     logger.info(f"Pre-download complete for: {title}")
 
-                found_file = False
-                for ext in ["mp3", "webm", "m4a", "opus"]:
-                    file_path = os.path.join(self.download_dir, f"next_song.{ext}")
-                    if os.path.exists(file_path):
-                        found_file = True
-                        logger.info(f"Pre-downloaded file found: {file_path}")
-                        break
-                if not found_file:
-                    logger.error(f"No pre-downloaded file found for: {title} in {self.download_dir}")
+                    found_file = False
+                    for ext in ["mp3", "webm", "m4a", "opus"]:
+                        file_path = os.path.join(self.download_dir, f"next_song.{ext}")
+                        if os.path.exists(file_path):
+                            found_file = True
+                            logger.info(f"Pre-downloaded file found: {file_path}")
+                            break
+                    if not found_file:
+                        logger.error(f"No pre-downloaded file found for: {title} in {self.download_dir}")
             except Exception as e:
-                logger.error(f"Error pre-downloading song {title}: {str(e)}")
+                logger.error(f"Error pre-downloading song: {str(e)}")
 
         self.download_thread = Thread(target=download_task)
         self.download_thread.start()
-        logger.info(f"Started pre-download thread for song: {title}")
-
+        logger.info(f"Started pre-download thread for first song in queue")
+        
     
     def search_song(self, query):
         try:
@@ -366,6 +366,7 @@ class MusicPlayer:
                 self.save_queue()
                 self.cleanup_pre_downloaded_files()
                 self.cleanup_current_song_files()
+                self.cleanup_root_files()  # Clean up stray files in root
                 return False, "No songs in queue"
 
         def play_in_thread():
@@ -374,7 +375,8 @@ class MusicPlayer:
 
                 with self.queue_lock:
                     url, title, duration, requested_by = self.queue[0]
-                    # Do not pop yet, wait until download is confirmed
+                    self.queue.pop(0)
+                    self.save_queue()
                     self.current_song = title
                     self.current_url = url
                     self.current_duration = duration
@@ -392,7 +394,8 @@ class MusicPlayer:
 
                 if not song_file:
                     ydl_opts = self.ydl_opts.copy()
-                    logger.info(f"No pre-downloaded file found, downloading: {title} to {ydl_opts['outtmpl']}")
+                    ydl_opts['outtmpl'] = os.path.join(self.download_dir, 'song.%(ext)s')  # Ensure correct path
+                    logger.info(f"No pre-downloaded file found, downloading: {title}")
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
                         logger.info("Download complete")
@@ -403,23 +406,15 @@ class MusicPlayer:
                             song_file = file_path
                             logger.info(f"Downloaded file found: {file_path}")
                             break
-
-                if not song_file:
-                    logger.error(f"No downloaded file found for: {title} in {self.download_dir}")
-                    with self.queue_lock:
-                        self.is_playing = False
-                        self.current_song = None
-                        self.current_url = None
-                        self.current_duration = None
-                        self.current_requested_by = None
-                        self.queue.pop(0)
-                        self.save_queue()
-                        self.pre_download_first_song()
-                    return
-
-                with self.queue_lock:
-                    self.queue.pop(0)  # Pop only after successful download
-                    self.save_queue()
+                    if not song_file:
+                        logger.error(f"No downloaded file found for: {title} in {self.download_dir}")
+                        with self.queue_lock:
+                            self.is_playing = False
+                            self.current_song = None
+                            self.current_url = None
+                            self.current_duration = None
+                            self.current_requested_by = None
+                        return
 
                 self.history.insert(0, title)
                 if len(self.history) > self.max_history:
@@ -450,10 +445,7 @@ class MusicPlayer:
                     self.current_requested_by = None
                     self.cleanup_pre_downloaded_files()
                     self.cleanup_current_song_files()
-                    if self.queue:
-                        self.queue.pop(0)  # Remove failed song
-                        self.save_queue()
-                        self.pre_download_first_song()
+                    self.cleanup_root_files()
 
         self.playback_thread = Thread(target=play_in_thread)
         self.playback_thread.start()
@@ -470,6 +462,7 @@ class MusicPlayer:
                 return True, message
             else:
                 return False, "No songs in queue"
+
     
     def update_stats(self, title, user=None):
         """Updates player statistics."""
