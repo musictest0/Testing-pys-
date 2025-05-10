@@ -125,6 +125,19 @@ class MusicPlayer:
             logger.error(f"Error searching song: {str(e)}")
             return None, None, None
 
+    def get_user_song_count(self, username):
+        """Count the number of songs requested by the user in queue and currently playing"""
+        count = 0
+        # Count songs in queue
+        for _, _, _, requested_by in self.queue:
+            if requested_by == username:
+                count += 1
+        # Count currently playing song
+        if self.is_playing and self.current_requested_by == username:
+            count += 1
+        return count
+
+    
     def save_queue(self):
         """Save the current queue to queue.json"""
         try:
@@ -150,6 +163,11 @@ class MusicPlayer:
     def add_to_queue(self, url, title, duration, requested_by):
   
         global music_queue
+        # Check if user has reached the 3-song limit
+        if self.get_user_song_count(requested_by) >= 3:
+            logger.info(f"User {requested_by} has reached the 3-song limit")
+            return 0, f"❌ @{requested_by}, you can only request up to 3 songs at a time. Wait until one of your songs finishes playing."
+        
         self.queue.append((url, title, duration, requested_by))
         self.save_queue()  # Save queue after adding
         queue_length = len(self.queue)
@@ -312,10 +330,7 @@ class MusicPlayer:
                     'no_warnings': True,
                     'cookiefile': 'cookies.txt'
                 }
-                # Add a random sleep interval before downloading
-                sleep_time = random.randint(5, 15)
-                logger.info(f"Sleeping for {sleep_time} seconds before downloading to mimic human behavior.")
-                time.sleep(sleep_time)
+                
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     logger.info(f"Downloading song: {title}")
                     result = ydl.download([url])
@@ -528,68 +543,57 @@ class Bot(BaseBot):
         logger.info(f"User joined: {user.username}")
         await self.highrise.chat(f"👋 Welcome @{user.username}! Use !play <song name> to play music!")
 
-    async def on_chat(self, user: User, message: str) -> None:
-        logger.info(f"Received chat message from {user.username}: {message}")
-
-        if message.startswith('!play'):
-            search_query = message[6:].strip()
-        elif message.startswith('!p'):
-            search_query = message[3:].strip()
-        else:
-            search_query = None
-        if search_query is not None:
-            # Cooldown check: 30 seconds per user
-            import time
-            now = time.time()
-            cooldown = 15  # seconds
-            last_time = self.last_request_time.get(user.username, 0)
-            if now - last_time < cooldown:
-                wait_time = int(cooldown - (now - last_time))
-                await self.highrise.chat(f"⏳ @{user.username}, please wait {wait_time} seconds before requesting another song.")
+    async def handle_play_command(self, user: User, search_query: str):
+        if self.ticket_mode and not self.is_owner(user.username):
+            tickets_count = self.get_user_tickets(user.username)
+            if tickets_count <= 0:
+                logger.info(f"User {user.username} has no tickets")
+                await self.highrise.chat(f"❌ {user.username}, you don't have any tickets to request songs. Your wallet has 0 tickets.")
                 return
-            self.last_request_time[user.username] = now
-            # Check if ticket mode is enabled and user is not an owner
-            if self.ticket_mode and not self.is_owner(user.username):
-                # Check if user has available tickets
-                tickets_count = self.get_user_tickets(user.username)
-                if tickets_count <= 0:
-                    await self.highrise.chat(f"❌ {user.username}, you don't have any tickets to request songs. Your wallet has 0 tickets.")
-                    return
-                else:
-                    # Use one ticket for this request
-                    success = self.use_ticket(user.username)
-                    if not success:
-                        await self.highrise.chat(f"❌ {user.username}, ticket deduction failed. Please try again.")
-                        return
-                    remaining = self.get_user_tickets(user.username)
-                    await self.highrise.chat(f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
+            success = self.use_ticket(user.username)
+            if not success:
+                logger.error(f"Ticket deduction failed for {user.username}")
+                await self.highrise.chat(f"❌ {user.username}, ticket deduction failed. Please try again.")
+                return
+            remaining = self.get_user_tickets(user.username)
+            await self.highrise.chat(f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
 
-            logger.info(f"Processing play command for query: {search_query}")
-            await self.highrise.chat(f"[🔍] Processing Your Request for: {search_query}")
-            url, title, duration, error = self.music_player.search_song(search_query)
-            
-            if error == "too_long":
-                await self.highrise.chat("❌ This song exceeds the 10-minute duration limit")
-            elif url and title and duration is not None:
-                position, queue_message = self.music_player.add_to_queue(url, title, duration, user.username)
-            # Log the state after adding to queue
-                self.music_player._test_state()
+        logger.info(f"Processing play command for query: {search_query} by {user.username}")
+        await self.highrise.chat(f"🔍 Searching for: {search_query}")
+        url, title, duration, error = self.music_player.search_song(search_query)
 
+        if error == "too_long":
+            logger.info(f"Song too long for query: {search_query}")
+            await self.highrise.chat("❌ This song exceeds the 10-minute duration limit")
+        elif url and title and duration is not None:
+            position, queue_message = self.music_player.add_to_queue(url, title, duration, user.username)
+            self.music_player._test_state()
+            if position == 0:  # Song not added due to limit
+                await self.highrise.chat(queue_message)
+            else:
                 await self.highrise.chat(queue_message)
                 if self.music_player.is_playing:
                     logger.info(f"Song currently playing, added '{title}' to queue at position {position}")
                 else:
                     logger.info(f"No song playing, starting '{title}' immediately")
                     success, result = self.music_player.play_next(user)
-                    # Log the state after starting playback
                     self.music_player._test_state()
                     if success:
                         await self.highrise.chat(result)
                     else:
+                        logger.error(f"Error playing song: {result}")
                         await self.highrise.chat(f"❌ Error playing song: {result}")
-            else:
-                await self.highrise.chat("❌ Could not find the song")
+        else:
+            logger.error(f"Failed to find song for query: {search_query}")
+            await self.highrise.chat("❌ Could not find the song. Please try again or check the query.")
 
+    async def on_chat(self, user: User, message: str) -> None:
+        logger.info(f"Received chat message from {user.username}: {message}")
+
+        if message.startswith('!play') or message.startswith('!p'):
+            search_query = message[6:].strip() if message.startswith('!play') else message[3:].strip()
+            await self.handle_play_command(user, search_query)
+     
         
         elif message.startswith('!q'):
             logger.info("Processing queue command")
