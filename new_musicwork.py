@@ -9,6 +9,7 @@ import logging
 import yt_dlp
 from googleapiclient.discovery import build
 import threading
+from threading import Lock
 import random
 import glob
 import time  # Added for sleep intervals
@@ -30,11 +31,14 @@ def check_ffmpeg_installed():
 
 class MusicPlayer:
     def __init__(self):
+        self.queue_lock = Lock()
         self.queue = []  # List of (url, title) tuples
         self.history = []  # List of played song titles
         self.max_history = 10  # Maximum number of songs to keep in history
         self.current_song = None
         self.current_url = None
+        self.current_duration = None
+        self.current_requested_by = None
         self.api_key = 'AIzaSyCuQwsagMLGToKlbNMEf7plFEkKhbr-DWs'
         self.volume = 100  # Default volume (percentage)
         self.ydl_opts = {
@@ -127,41 +131,63 @@ class MusicPlayer:
 
     def save_queue(self):
         """Save the current queue to queue.json"""
-        try:
-            with open('queue.json', 'w') as f:
-                json.dump(self.queue, f, indent=2)
-            logger.info("Queue saved to queue.json")
-        except Exception as e:
-            logger.error(f"Error saving queue: {e}")
+        with self.queue_lock:
+            try:
+                with open('queue.json', 'w') as f:
+                    json.dump(self.queue, f, indent=2)
+                logger.info("Queue saved to queue.json")
+            except Exception as e:
+                logger.error(f"Error saving queue: {e}")
 
     def load_queue(self):
         """Load the queue from queue.json if it exists"""
-        try:
-            if os.path.exists('queue.json'):
-                with open('queue.json', 'r') as f:
-                    self.queue = json.load(f)
-                logger.info("Queue loaded from queue.json")
-            else:
+        with self.queue_lock:
+            try:
+                if os.path.exists('queue.json'):
+                    with open('queue.json', 'r') as f:
+                        loaded_queue = json.load(f)
+                        self.queue = [
+                            (url, title, float(duration), requested_by)
+                            for url, title, duration, requested_by in loaded_queue
+                        ]
+                    logger.info("Queue loaded from queue.json")
+                else:
+                    self.queue = []
+            except Exception as e:
+                logger.error(f"Error loading queue: {e}")
                 self.queue = []
-        except Exception as e:
-            logger.error(f"Error loading queue: {e}")
-            self.queue = []
+                
 
+    def get_user_song_count(self, username):
+        """Count the number of songs requested by the user in queue and currently playing"""
+        with self.queue_lock:
+            count = 0
+            for _, _, _, requested_by in self.queue:
+                if requested_by == username:
+                    count += 1
+            if self.is_playing and self.current_requested_by == username:
+                count += 1
+            return count
+            
     def add_to_queue(self, url, title, duration, requested_by):
   
         global music_queue
-        self.queue.append((url, title, duration, requested_by))
-        self.save_queue()  # Save queue after adding
-        queue_length = len(self.queue)
-        logger.info(f"Added song to queue: {title}, Queue length: {queue_length}")
-        message = (
+        with self.queue_lock:
+            if self.get_user_song_count(requested_by) >= 3:
+                logger.info(f"User {requested_by} has reached the 3-song limit")
+                return 0, f"❌ @{requested_by}, you can only request up to 3 songs at a time. Wait until one of your songs finishes playing."
+            self.queue.append((url, title, duration, requested_by))
+            self.save_queue()
+            queue_length = len(self.queue)
+            logger.info(f"Added song to queue: {title}, Duration: {duration:.2f} minutes, Requested by: {requested_by}, Queue length: {queue_length}")
+            message = (
     f"\n🎧 Track successfully added!\n\n"
     f"🎼 Title: {title}\n"
     f"⏱️ Duration: {duration:.2f} min\n"
     f"🔖 Queue Position: #{queue_length}\n"
     f"👤 Requested by: {requested_by}"
         )
-        return queue_length, message
+            return queue_length, message
 
     def delete_user_song(self, username):
         """Delete the most recent song requested by the user from the queue"""
@@ -273,19 +299,20 @@ class MusicPlayer:
     def stop_playlist(self):
         pass  # Playlist functionality removed
 
+    
     def play_next(self, user=None):
         logger.info("play_next called")
-        # Playlist functionality removed
-        if not self.queue:
-            logger.info("No songs in queue to play in play_next")
-            self.is_playing = False
-            self.current_song = None
-            self.current_url = None
-            self.current_duration = None  # Reset duration
-            self.current_requested_by = None  # Reset requested_by
-       
-            self.save_queue()  # Save queue if now empty
-            return False, "No songs in queue"
+        with self.queue_lock:
+            if not self.queue:
+                logger.info("No songs in queue to play in play_next")
+                self.is_playing = False
+                self.current_song = None
+                self.current_url = None
+                self.current_duration = None
+                self.current_requested_by = None
+                self.save_queue()
+                return False, "No songs in queue"
+
         def play_in_thread():
             try:
                 import glob
@@ -298,8 +325,10 @@ class MusicPlayer:
                             logger.info(f"Deleted old file: {f}")
                         except Exception as e:
                             logger.error(f"Error deleting old file {f}: {e}")
-                url, title, duration, requested_by = self.queue[0]  # Peek at the first song
-        
+
+                with self.queue_lock:
+                    url, title, duration, requested_by = self.queue[0]  # Peek at the first song
+
                 ydl_opts = {
                     'format': 'bestaudio/best',
                     'postprocessors': [{
@@ -312,47 +341,50 @@ class MusicPlayer:
                     'no_warnings': True,
                     'cookiefile': 'cookies.txt'
                 }
-                # Add a random sleep interval before downloading
-                sleep_time = random.randint(5, 15)
-                logger.info(f"Sleeping for {sleep_time} seconds before downloading to mimic human behavior.")
-                time.sleep(sleep_time)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     logger.info(f"Downloading song: {title}")
                     result = ydl.download([url])
                     logger.info("Download complete, starting playback")
-                    # Check if any song file exists after download
-                    found_file = False
-                    for ext in ["mp3", "webm", "m4a", "opus"]:
-                        if os.path.exists(f"song.{ext}"):
-                            found_file = True
-                            break
-                    if not found_file:
-                        logger.error("No song file found after download! Skipping this track.")
-                        # Remove from queue and skip
+
+                # Check if any song file exists after download
+                found_file = False
+                for ext in ["mp3", "webm", "m4a", "opus"]:
+                    if os.path.exists(f"song.{ext}"):
+                        found_file = True
+                        break
+                if not found_file:
+                    logger.error("No song file found after download! Skipping this track.")
+                    with self.queue_lock:
                         self.queue.pop(0)
                         self.save_queue()
-                        return
-                    # Only now pop from queue and set current song
+                    return
+
+                # Update current song metadata
+                with self.queue_lock:
                     self.queue.pop(0)
                     self.save_queue()
                     self.current_song = title
                     self.current_url = url
-                    self.current_duration = duration  # Set duration
-                    self.current_requested_by = requested_by  # Set requested_by
-        
+                    self.current_duration = duration
+                    self.current_requested_by = requested_by
                     self.is_playing = True
-                    # Add song to history
-                    self.history.insert(0, title)
-                    if len(self.history) > self.max_history:
-                        self.history.pop()
-                    # Update stats (pass user if available)
-                    self.update_stats(title, user)
-                    if self.is_playing:  # Check if we should still play this song
-                        self.play_websocket()
+
+                # Add song to history
+                self.history.insert(0, title)
+                if len(self.history) > self.max_history:
+                    self.history.pop()
+
+                # Update stats
+                self.update_stats(title, user)
+
+                if self.is_playing:
+                    self.play_websocket()
+
+                with self.queue_lock:
                     self.is_playing = False
                     self.current_song = None
                     self.current_url = None
-                    self.current_duration = None  # Reset duration
+                    self.current_duration = None
                     self.current_requested_by = None
                     # Start next song if available
                     if self.queue:
@@ -360,33 +392,33 @@ class MusicPlayer:
                         self.play_next(user)
                     else:
                         logger.info("Song finished, queue empty")
-                        # Playlist functionality removed
             except Exception as e:
                 logger.error(f"Error in playback thread: {str(e)}")
-                self.is_playing = False
-                self.current_song = None
-                self.current_url = None
-                self.current_duration = None
-                self.current_requested_by = None
-                # Playlist functionality removed
+                with self.queue_lock:
+                    self.is_playing = False
+                    self.current_song = None
+                    self.current_url = None
+                    self.current_duration = None
+                    self.current_requested_by = None
 
-        # Always start playback in a new thread
+        # Start playback in a new thread
         self.playback_thread = threading.Thread(target=play_in_thread)
         self.playback_thread.start()
         logger.info(f"Started playback thread for next song in queue")
         # Return the next song's title for confirmation
-        if self.queue:
-            url, title, duration, requested_by = self.queue[0]
-            message = (
-    f"\n✨ Now Streaming\n\n"
-    f"📀 Title: {title}\n"
-    f"🕒 Duration: {duration:.2f} minutes\n"
-    f"🧑‍🎧 Requested by: {requested_by}"
-            )
-            return True, message
-        else:
-            return False, "No songs in queue"
-
+        with self.queue_lock:
+            if self.queue:
+                url, title, duration, requested_by = self.queue[0]
+                message = (
+                    f"\n✨ Now Streaming\n\n"
+                    f"📀 Title: {title}\n"
+                    f"🕒 Duration: {duration:.2f} minutes\n"
+                    f"🧑‍🎧 Requested by: {requested_by}"
+                )
+                return True, message
+            else:
+                return False, "No songs in queue"
+                
     def update_stats(self, title, user=None):
         """Updates player statistics."""
         try:
@@ -416,14 +448,16 @@ class MusicPlayer:
             logger.info(f"Volume set to {self.volume}%")
         return self.volume
 
+    
+
     def play_websocket(self):
         logger.info("Starting websocket playback")
 
-        if not check_ffmpeg_installed():
+        if not self.check_ffmpeg_installed():
             logger.error("Cannot play audio: FFmpeg not available")
-            return
+            return False
 
-        # Find the downloaded file (song.mp3, song.webm, song.m4a, etc.)
+    # Find the downloaded file (song.mp3, song.webm, song.m4a, etc.)
         song_file = None
         for ext in ["mp3", "webm", "m4a", "opus"]:
             files = glob.glob(f"song.{ext}")
@@ -432,40 +466,98 @@ class MusicPlayer:
                 break
         if not song_file:
             logger.error("No downloaded song file found for playback!")
-            return
+            return False
 
-        # Calculate volume filter value (ffmpeg uses scale of 0.0-3.0 for volume)
+    # Calculate volume filter value (ffmpeg uses scale of 0.0-3.0 for volume)
         volume_factor = self.volume / 100.0
-    # Use alimiter to prevent clipping at high volumes
         audio_filter = f"volume={volume_factor},alimiter=limit=0.95:level_in=1"
-    
+
+    # Use environment variables for Icecast credentials
+        icecast_user = os.getenv('ICECAST_USER', 'Habibi_78')
+        icecast_pass = os.getenv('ICECAST_PASS', 'alkama789')
+        icecast_url = f"icecast://{icecast_user}:{icecast_pass}@live.radioking.com:80/pop-country-radio67"
+
         ffmpeg_command = [
         'ffmpeg',
         '-re',                    # Read input at native frame rate
         '-i', song_file,          # Input audio file
         '-af', audio_filter,      # Apply volume adjustment with limiter
         '-f', 'mp3',              # Output format
-        '-vn',                    # Disable video recording
-        '-content_type', 'audio/mpeg',  # Set content type for Icecast
-        'icecast://Habibi_78:alkama789@live.radioking.com:80/pop-country-radio67'  # Icecast server URL
+        '-vn',                    # Disable video
+        '-content_type', 'audio/mpeg',
+        '-timeout', '30',         # Connection timeout (seconds)
+        '-reconnect', '1',        # Enable reconnection
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '300',  # Retry for up to 5 minutes
+        '-bufsize', '65536',      # 64KB buffer to handle network jitter
+        icecast_url
     ]
 
-        try:
-            logger.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
-            self.ffmpeg_process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if self.ffmpeg_process is not None:
-                stdout, stderr = self.ffmpeg_process.communicate()
-                if self.ffmpeg_process.returncode != 0:
-                    logger.error(f"FFmpeg error: {stderr.decode()}")
-                else:
-                    logger.info("FFmpeg process completed successfully")
-            else:
-                logger.error("FFmpeg process did not start properly.")
-        except Exception as e:
-            logger.error(f"Error in play_websocket: {str(e)}")
-            raise
-        finally:
-            self.ffmpeg_process = None
+        max_retries = 3
+        retry_delay = 5  # seconds
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Executing FFmpeg command (attempt {attempt + 1}): {' '.join(ffmpeg_command)}")
+                self.ffmpeg_process = subprocess.Popen(
+                    ffmpeg_command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    bufsize=1  # Line-buffered
+            )
+
+            # Monitor FFmpeg output in a separate thread to avoid blocking
+                def log_ffmpeg_output():
+                    while True:
+                        try:
+                            line = self.ffmpeg_process.stderr.readline()
+                            if not line:
+                                break
+                            line = line.strip()
+                            if line:
+                                logger.info(f"FFmpeg output: {line}")
+                        except Exception as e:
+                            logger.error(f"Error reading FFmpeg output: {str(e)}")
+                            break
+                    self.ffmpeg_process.wait()
+                    if self.ffmpeg_process.returncode != 0:
+                        logger.error(f"FFmpeg exited with code {self.ffmpeg_process.returncode}")
+
+                threading.Thread(target=log_ffmpeg_output, daemon=True).start()
+
+            # Wait for the process to start and check if it’s running
+                time.sleep(1)  # Give FFmpeg a moment to initialize
+                if self.ffmpeg_process.poll() is not None:
+                    logger.error(f"FFmpeg process terminated early with code {self.ffmpeg_process.returncode}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error("Max retries reached, giving up")
+                        return False
+
+                logger.info("FFmpeg process started successfully")
+                return True
+
+            except Exception as e:
+                logger.error(f"Error in play_websocket (attempt {attempt + 1}): {str(e)}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                logger.error("Max retries reached, giving up")
+                return False
+            finally:
+                if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
+                    try:
+                        self.ffmpeg_process.terminate()
+                        self.ffmpeg_process.wait(timeout=5)
+                    except Exception as e:
+                        logger.error(f"Error terminating FFmpeg process: {str(e)}")
+                self.ffmpeg_process = None
+
+        return False
 
     def _test_state(self):
         """Debug method to print current state"""
@@ -528,68 +620,63 @@ class Bot(BaseBot):
         logger.info(f"User joined: {user.username}")
         await self.highrise.chat(f"👋 Welcome @{user.username}! Use !play <song name> to play music!")
 
-    async def on_chat(self, user: User, message: str) -> None:
-        logger.info(f"Received chat message from {user.username}: {message}")
-
-        if message.startswith('!play'):
-            search_query = message[6:].strip()
-        elif message.startswith('!p'):
-            search_query = message[3:].strip()
-        else:
-            search_query = None
-        if search_query is not None:
-            # Cooldown check: 30 seconds per user
-            import time
-            now = time.time()
-            cooldown = 15  # seconds
-            last_time = self.last_request_time.get(user.username, 0)
-            if now - last_time < cooldown:
-                wait_time = int(cooldown - (now - last_time))
-                await self.highrise.chat(f"⏳ @{user.username}, please wait {wait_time} seconds before requesting another song.")
+    async def handle_play_command(self, user: User, search_query: str):
+    # Optional ticket system (comment out if not needed)
+        if self.ticket_mode and not self.is_owner(user.username):
+            tickets_count = self.get_user_tickets(user.username)
+            if tickets_count <= 0:
+                logger.info(f"User {user.username} has no tickets")
+                await self.highrise.chat(f"❌ {user.username}, you don't have any tickets to request songs. Your wallet has 0 tickets.")
                 return
-            self.last_request_time[user.username] = now
-            # Check if ticket mode is enabled and user is not an owner
-            if self.ticket_mode and not self.is_owner(user.username):
-                # Check if user has available tickets
-                tickets_count = self.get_user_tickets(user.username)
-                if tickets_count <= 0:
-                    await self.highrise.chat(f"❌ {user.username}, you don't have any tickets to request songs. Your wallet has 0 tickets.")
-                    return
-                else:
-                    # Use one ticket for this request
-                    success = self.use_ticket(user.username)
-                    if not success:
-                        await self.highrise.chat(f"❌ {user.username}, ticket deduction failed. Please try again.")
-                        return
-                    remaining = self.get_user_tickets(user.username)
-                    await self.highrise.chat(f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
+            success = self.use_ticket(user.username)
+            if not success:
+                logger.error(f"Ticket deduction failed for {user.username}")
+                await self.highrise.chat(f"❌ {user.username}, ticket deduction failed. Please try again.")
+                return
+            remaining = self.get_user_tickets(user.username)
+            await self.highrise.chat(f"🎫 {user.username} used 1 music ticket. {remaining} ticket(s) remaining in wallet.")
 
-            logger.info(f"Processing play command for query: {search_query}")
-            await self.highrise.chat(f"[🔍] Processing Your Request for: {search_query}")
-            url, title, duration, error = self.music_player.search_song(search_query)
-            
-            if error == "too_long":
-                await self.highrise.chat("❌ This song exceeds the 10-minute duration limit")
-            elif url and title and duration is not None:
-                position, queue_message = self.music_player.add_to_queue(url, title, duration, user.username)
-            # Log the state after adding to queue
-                self.music_player._test_state()
+        logger.info(f"Processing play command for query: {search_query} by {user.username}")
+        await self.highrise.chat(f"🔍 Searching for: {search_query}")
+    
+    # Search for the song
+        url, title, duration, error = self.music_player.search_song(search_query)
 
+        if error == "too_long":
+            logger.info(f"Song too long for query: {search_query}")
+            await self.highrise.chat("❌ This song exceeds the 10-minute duration limit")
+        elif url and title and duration is not None:
+        # Attempt to add to queue (enforces 3-song limit)
+            position, queue_message = self.music_player.add_to_queue(url, title, duration, user.username)
+            self.music_player._test_state()
+            if position == 0:  # Song not added (e.g., due to 3-song limit)
+                await self.highrise.chat(queue_message)
+            else:
                 await self.highrise.chat(queue_message)
                 if self.music_player.is_playing:
                     logger.info(f"Song currently playing, added '{title}' to queue at position {position}")
                 else:
                     logger.info(f"No song playing, starting '{title}' immediately")
                     success, result = self.music_player.play_next(user)
-                    # Log the state after starting playback
                     self.music_player._test_state()
                     if success:
                         await self.highrise.chat(result)
                     else:
+                        logger.error(f"Error playing song: {result}")
                         await self.highrise.chat(f"❌ Error playing song: {result}")
-            else:
-                await self.highrise.chat("❌ Could not find the song")
+        else:
+            logger.error(f"Failed to find song for query: {search_query}")
+            await self.highrise.chat("❌ Could not find the song. Please try a different query or URL.")
 
+    async def on_chat(self, user: User, message: str) -> None:
+        logger.info(f"Received chat message from {user.username}: {message}")
+
+        if message.startswith('!play') or message.startswith('!p'):
+            search_query = message[6:].strip() if message.startswith('!play') else message[3:].strip()
+            if not search_query:
+                await self.highrise.chat(f"❌ @{user.username}, please provide a song name or URL, e.g., !play Despacito")
+                return
+            await self.handle_play_command(user, search_query)
         
         elif message.startswith('!q'):
             logger.info("Processing queue command")
